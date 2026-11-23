@@ -1,13 +1,23 @@
 /* 离线优先：壳子先缓存，瓦片按需存最近看过的 */
-const VERSION = 'im-flat-mwtdn48f';
+const VERSION = 'im-v0.4.0';
 const SHELL = [
   './',
   './index.html',
-  './app.css',
-  './app.bundle.js',
-  './icon.png',
+  './css/app.css',
+  './js/app.js',
+  './js/db.js',
+  './js/model.js',
+  './js/geo.js',
+  './js/map.js',
+  './js/ui.js',
+  './js/backup.js',
+  './vendor/leaflet/leaflet.js',
+  './vendor/leaflet/leaflet.css',
+  './vendor/leaflet/images/marker-icon.png',
+  './vendor/leaflet/images/marker-shadow.png',
+  './vendor/fflate.js',
+  './icons/icon-192.png',
   './manifest.webmanifest',
-  './cn-cities.json',
 ];
 
 self.addEventListener('install', (event) => {
@@ -47,18 +57,8 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
 
-  // 版本文件永远要最新的，不能被缓存挡住
-  if (url.pathname.endsWith('/version.json')) {
-    event.respondWith(
-      fetch(req, { cache: 'no-store' }).catch(
-        () => new Response('{}', { headers: { 'content-type': 'application/json' } })
-      )
-    );
-    return;
-  }
-
   // 地图瓦片
-  if (url.hostname.endsWith('autonavi.com') || url.hostname.endsWith('datav.aliyun.com')) {
+  if (url.hostname.endsWith('autonavi.com')) {
     event.respondWith(
       (async () => {
         const cache = await caches.open(VERSION + '-tiles');
