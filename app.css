@@ -724,6 +724,17 @@ body.focus .leaflet-bottom{bottom:0}
 }
 .round-btn:active,.searchbar:active{transform:scale(.97)}
 
+/* 右侧缩放按钮 */
+.map-side{
+  position:absolute;right:12px;top:calc(env(safe-area-inset-top,0px) + 62px);
+  z-index:600;display:flex;flex-direction:column;
+  background:var(--card);border-radius:14px;
+  box-shadow:0 3px 14px rgba(45,35,20,.14);overflow:hidden;
+}
+.map-side button{width:40px;height:40px;font-size:19px;line-height:1;display:grid;place-items:center;color:var(--ink)}
+.map-side button+button{border-top:1px solid var(--line)}
+.map-side button:active{background:#F2ECE1}
+
 /* 地图标记 */
 .pin-wrap{position:absolute;left:0;top:0}
 .pin{
@@ -742,6 +753,8 @@ body.focus .leaflet-bottom{bottom:0}
 .pin.visited .dot{background:#8E331F;opacity:1}
 .pin.done{background:var(--accent);color:#fff}
 .pin.single{min-width:30px;height:30px;padding:0;border-radius:15px}
+.pin.admin{background:rgba(30,26,23,.9);color:#fff;border-color:rgba(255,255,255,.92);padding:0 11px;gap:6px}
+.pin.admin b{font-weight:700;font-size:12px;background:rgba(255,255,255,.22);border-radius:9px;padding:1px 6px;line-height:1.4}
 .pin.single .dot{width:8px;height:8px}
 
 /* 屏幕中心准星：拖动时出现，告诉你 ＋ 会记在哪儿 */

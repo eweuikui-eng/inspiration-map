@@ -111,10 +111,46 @@ window.L = window.L || window.leaflet;
     if (place.visitedAt) return "visited";
     return "wish";
   }
-  function clusterPlaces(places2, zoom2) {
+  function adminLevelFor(zoom2) {
+    if (zoom2 <= 7) return "province";
+    if (zoom2 <= 10) return "city";
+    return null;
+  }
+  function groupPlaces(places2, zoom2) {
     if (!places2.length) return [];
+    const level = adminLevelFor(zoom2);
+    if (level) {
+      const map2 = /* @__PURE__ */ new Map();
+      for (const p of places2) {
+        const raw = level === "province" ? p.province : p.city;
+        const label = String(raw || "").trim() || "\u672A\u5F52\u7C7B";
+        const key = level === "city" ? label + "@" + (p.province || "") : label;
+        let g = map2.get(key);
+        if (!g) {
+          g = { kind: "admin", level, label, items: [], lat: 0, lng: 0 };
+          map2.set(key, g);
+        }
+        g.items.push(p);
+        g.lat += p.lat;
+        g.lng += p.lng;
+      }
+      return [...map2.values()].map((g) => ({
+        ...g,
+        lat: g.lat / g.items.length,
+        lng: g.lng / g.items.length,
+        count: g.items.length
+      }));
+    }
     if (zoom2 >= 15) {
-      return places2.map((p) => ({ lat: p.lat, lng: p.lng, items: [p] }));
+      return places2.map((p) => ({
+        kind: "place",
+        level: null,
+        label: "",
+        items: [p],
+        lat: p.lat,
+        lng: p.lng,
+        count: 1
+      }));
     }
     const cell = 56 * 360 / (256 * Math.pow(2, zoom2));
     const buckets = /* @__PURE__ */ new Map();
@@ -131,11 +167,28 @@ window.L = window.L || window.leaflet;
       b.lat += p.lat;
       b.lng += p.lng;
     }
-    const out = [];
-    for (const b of buckets.values()) {
-      out.push({ lat: b.lat / b.items.length, lng: b.lng / b.items.length, items: b.items });
+    return [...buckets.values()].map((b) => ({
+      kind: "grid",
+      level: null,
+      label: "",
+      items: b.items,
+      lat: b.lat / b.items.length,
+      lng: b.lng / b.items.length,
+      count: b.items.length
+    }));
+  }
+  function boundsOf(items) {
+    let minLat = 90;
+    let maxLat = -90;
+    let minLng = 180;
+    let maxLng = -180;
+    for (const p of items) {
+      if (p.lat < minLat) minLat = p.lat;
+      if (p.lat > maxLat) maxLat = p.lat;
+      if (p.lng < minLng) minLng = p.lng;
+      if (p.lng > maxLng) maxLng = p.lng;
     }
-    return out;
+    return { minLat, maxLat, minLng, maxLng, single: minLat === maxLat && minLng === maxLng };
   }
   function haversine(a, b) {
     const R = 6371e3;
@@ -192,6 +245,7 @@ window.L = window.L || window.leaflet;
   var TILE = "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}";
   var map = null;
   var layer = null;
+  var locateLayer = null;
   var places = [];
   var handlers = {};
   var lastZoom = -1;
@@ -211,16 +265,16 @@ window.L = window.L || window.leaflet;
       attribution: "\xA9 \u9AD8\u5FB7\u5730\u56FE"
     }).addTo(map);
     layer = L.layerGroup().addTo(map);
-    const ring = document.createElement("div");
-    ring.className = "center-ring";
-    map.getContainer().appendChild(ring);
-    map.on("movestart", () => ring.classList.add("show"));
-    map.on("moveend", () => setTimeout(() => ring.classList.remove("show"), 700));
     map.on("moveend zoomend", () => {
       currentCenter = map.getCenter();
       if (map.getZoom() !== lastZoom) render();
     });
     map.on("click", () => handlers.onBlank && handlers.onBlank());
+    const ring = document.createElement("div");
+    ring.className = "center-ring";
+    map.getContainer().appendChild(ring);
+    map.on("movestart", () => ring.classList.add("show"));
+    map.on("moveend", () => setTimeout(() => ring.classList.remove("show"), 700));
     const box = map.getContainer();
     box.addEventListener("contextmenu", (e) => e.preventDefault());
     let lpTimer = null;
@@ -264,15 +318,31 @@ window.L = window.L || window.leaflet;
     if (!force && zoom2 === lastZoom) return;
     lastZoom = zoom2;
     layer.clearLayers();
-    const clusters = clusterPlaces(places, zoom2);
-    for (const c of clusters) {
+    const view = map.getBounds().pad(0.6);
+    for (const c of groupPlaces(places, zoom2)) {
+      if (!view.contains([c.lat, c.lng])) continue;
+      if (c.kind === "admin") {
+        const icon2 = L.divIcon({
+          className: "pin-wrap",
+          html: `<div class="pin admin"><span>${escapeHtml(c.label)}</span><b>${c.count}</b></div>`,
+          iconSize: [0, 0],
+          iconAnchor: [0, 0]
+        });
+        const marker2 = L.marker([c.lat, c.lng], { icon: icon2, keyboard: false });
+        marker2.on("click", (e) => {
+          L.DomEvent.stopPropagation(e);
+          drillInto(c);
+        });
+        marker2.addTo(layer);
+        continue;
+      }
       const single = c.items.length === 1;
-      const count = c.items.reduce((n, p) => n + (p.count || 0), 0);
+      const total = c.items.reduce((n, p) => n + (p.count || 0), 0);
       const status = c.items.reduce(
         (best, p) => statusScore(p.status) > statusScore(best) ? p.status : best,
         "wish"
       );
-      const label = single ? "" : String(count || c.items.length);
+      const label = single ? "" : String(c.count);
       const html = single ? `<div class="pin single ${status}"><span class="dot"></span></div>` : `<div class="pin ${status}"><span>${label}</span></div>`;
       const icon = L.divIcon({
         className: "pin-wrap",
@@ -283,10 +353,54 @@ window.L = window.L || window.leaflet;
       const marker = L.marker([c.lat, c.lng], { icon, keyboard: false, riseOnHover: true });
       marker.on("click", (e) => {
         L.DomEvent.stopPropagation(e);
-        handlers.onPick && handlers.onPick(c);
+        handlers.onPick && handlers.onPick(c, total);
       });
       marker.addTo(layer);
     }
+  }
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function drillInto(c) {
+    if (!map) return;
+    const b = boundsOf(c.items);
+    const target = c.level === "province" ? 9 : 12;
+    if (b.single) {
+      map.flyTo([c.lat, c.lng], target, { duration: 0.55 });
+      return;
+    }
+    map.flyToBounds(
+      L.latLngBounds([b.minLat, b.minLng], [b.maxLat, b.maxLng]),
+      { padding: [40, 40], maxZoom: target, duration: 0.55 }
+    );
+  }
+  function showLocate(lat, lng, accuracy) {
+    if (!map) return;
+    if (locateLayer) map.removeLayer(locateLayer);
+    locateLayer = L.layerGroup();
+    const r = Math.max(Number(accuracy) || 30, 12);
+    L.circle([lat, lng], {
+      radius: r,
+      color: "#2A6FDB",
+      weight: 1,
+      opacity: 0.9,
+      fillColor: "#2A6FDB",
+      fillOpacity: 0.11
+    }).addTo(locateLayer);
+    L.circleMarker([lat, lng], {
+      radius: 6,
+      color: "#fff",
+      weight: 2.5,
+      fillColor: "#2A6FDB",
+      fillOpacity: 1
+    }).addTo(locateLayer);
+    locateLayer.addTo(map);
+    map.flyTo([lat, lng], Math.max(map.getZoom(), 16), { duration: 0.6 });
+  }
+  function zoomBy(delta) {
+    if (!map) return;
+    const z = Math.min(18, Math.max(3, map.getZoom() + delta));
+    map.setZoom(z, { animate: true });
   }
   function center() {
     return map ? map.getCenter() : currentCenter;
@@ -438,6 +552,7 @@ window.L = window.L || window.leaflet;
           name: p.name,
           address: [p.cityname, p.adname, p.address].filter(Boolean).join(" "),
           city: p.cityname || "",
+          province: p.pname || "",
           lat,
           lng
         };
@@ -453,6 +568,7 @@ window.L = window.L || window.leaflet;
         name: p.name || p.street || p.locality || p.district || p.city || "\u672A\u547D\u540D",
         address: [p.district, p.city, p.state, p.country].filter(Boolean).join(" \xB7 "),
         city: p.city || p.state || "",
+        province: p.state || "",
         lat: g.lat,
         lng: g.lng
       };
@@ -471,7 +587,8 @@ window.L = window.L || window.leaflet;
       return {
         name: poi || comp.township || rg.formatted_address || "\u672A\u547D\u540D\u5730\u70B9",
         address: rg.formatted_address || "",
-        city
+        city,
+        province: comp.province || ""
       };
     }
     const w = gcj2wgs(lat, lng);
@@ -483,7 +600,8 @@ window.L = window.L || window.leaflet;
     return {
       name: p.name || p.street || p.locality || p.district || p.city || "\u672A\u547D\u540D\u5730\u70B9",
       address: [p.street, p.district, p.city, p.state].filter(Boolean).join(" "),
-      city: p.city || p.state || ""
+      city: p.city || p.state || "",
+      province: p.state || ""
     };
   }
 
@@ -917,33 +1035,56 @@ window.L = window.L || window.leaflet;
   function hideCard() {
     document.getElementById("map-card").hidden = true;
   }
+  function showPlaceCard(p) {
+    const card = document.getElementById("map-card");
+    const es = S.entriesByPlace.get(p.id) || [];
+    const status = p.status || statusOf(p, es);
+    const count = p.count != null ? p.count : es.length;
+    card.innerHTML = `
+    <div class="mc-main">
+      <h3>${esc(p.name)}</h3>
+      <p>${count} \u6761 \xB7 ${esc(statusLabel(status))}</p>
+    </div>
+    <span class="go">\u203A</span>`;
+    card.onclick = () => {
+      S.backTo = "#/";
+      location.hash = "#/place/" + p.id;
+    };
+    card.hidden = false;
+  }
+  function showNewSpotCard(r) {
+    const card = document.getElementById("map-card");
+    card.innerHTML = `
+    <div class="mc-main">
+      <h3>${esc(r.name)}</h3>
+      <p>\u8FD9\u91CC\u8FD8\u6CA1\u8BB0\u8FC7</p>
+    </div>
+    <span class="go">\u8BB0\u4E00\u7B14</span>`;
+    card.onclick = () => openCapture({
+      latlng: { lat: r.lat, lng: r.lng },
+      name: r.name,
+      city: r.city,
+      province: r.province
+    });
+    card.hidden = false;
+  }
   function onClusterPick(cluster) {
     const card = document.getElementById("map-card");
-    const total = cluster.items.reduce((n, p) => n + (p.count || 0), 0);
     if (cluster.items.length === 1) {
-      const p = cluster.items[0];
-      card.innerHTML = `
-      <div class="mc-main">
-        <h3>${esc(p.name)}</h3>
-        <p>${p.count || 0} \u6761 \xB7 ${esc(statusLabel(p.status))}</p>
-      </div>
-      <span class="go">\u203A</span>`;
-      card.onclick = () => {
-        S.backTo = "#/";
-        location.hash = "#/place/" + p.id;
-      };
-    } else {
-      card.innerHTML = `
-      <div class="mc-main">
-        <h3>${cluster.items.length} \u4E2A\u5730\u65B9</h3>
-        <p>\u5171 ${total || cluster.items.length} \u6761 \xB7 \u70B9\u4E00\u4E0B\u653E\u5927</p>
-      </div>
-      <span class="go">\uFF0B</span>`;
-      card.onclick = () => {
-        flyTo(cluster.lat, cluster.lng, Math.min(16, zoom() + 3));
-        hideCard();
-      };
+      showPlaceCard(cluster.items[0]);
+      return;
     }
+    const total = cluster.items.reduce((n, p) => n + (p.count || 0), 0);
+    card.innerHTML = `
+    <div class="mc-main">
+      <h3>${cluster.items.length} \u4E2A\u5730\u65B9</h3>
+      <p>\u5171 ${total || cluster.items.length} \u6761 \xB7 \u70B9\u4E00\u4E0B\u653E\u5927</p>
+    </div>
+    <span class="go">\uFF0B</span>`;
+    card.onclick = () => {
+      flyTo(cluster.lat, cluster.lng, Math.min(16, zoom() + 3));
+      hideCard();
+    };
     card.hidden = false;
   }
   function openCapture(opts) {
@@ -972,6 +1113,7 @@ window.L = window.L || window.leaflet;
       latlng: src.latlng || null,
       name: src.name || "",
       city: src.city || "",
+      province: src.province || "",
       kind: src.kind || "note",
       text: "",
       photos: [],
@@ -995,6 +1137,7 @@ window.L = window.L || window.leaflet;
       if (cap.place) {
         cap.name = cap.place.name;
         cap.city = cap.place.city || "";
+        cap.province = cap.place.province || cap.province;
       }
       cap.savedPhotoIds = (entry.photos || []).slice();
       for (const id of cap.savedPhotoIds) {
@@ -1016,12 +1159,14 @@ window.L = window.L || window.leaflet;
         cap.latlng = cap.latlng || { lat: cap.place.lat, lng: cap.place.lng };
         cap.name = cap.name || cap.place.name;
         cap.city = cap.city || cap.place.city || "";
+        cap.province = cap.province || cap.place.province || "";
       } else if (src.latlng) {
         const near = nearestPlace(S.places, src.latlng.lat, src.latlng.lng, 120);
         if (near) {
           cap.place = near;
           cap.name = near.name;
           cap.city = near.city || "";
+          cap.province = near.province || "";
           cap.latlng = { lat: near.lat, lng: near.lng };
         }
       }
@@ -1050,6 +1195,7 @@ window.L = window.L || window.leaflet;
         if (!cap || cap !== target || cap.name) return;
         cap.name = r.name;
         cap.city = cap.city || r.city || "";
+        cap.province = cap.province || r.province || "";
         paintCap();
       }).catch(() => {
         if (cap === target && !cap.name) paintCap();
@@ -1118,6 +1264,7 @@ window.L = window.L || window.leaflet;
           id: uid("p_"),
           name: cap.name || "\u672A\u547D\u540D\u5730\u70B9",
           city: cap.city || "",
+          province: cap.province || "",
           lat: ll.lat,
           lng: ll.lng,
           createdAt: Date.now()
@@ -1205,11 +1352,13 @@ window.L = window.L || window.leaflet;
       cap.latlng = { lat: r.lat, lng: r.lng };
       cap.name = r.name;
       cap.city = r.city || "";
+      cap.province = r.province || "";
       const exist = r.placeId ? S.places.find((p) => p.id === r.placeId) : null;
       cap.place = exist || nearestPlace(S.places, r.lat, r.lng, 120) || null;
       if (exist) {
         cap.name = exist.name;
         cap.city = exist.city || "";
+        cap.province = exist.province || cap.province;
       }
       cap.dirty = true;
       paintCap();
@@ -1232,6 +1381,7 @@ window.L = window.L || window.leaflet;
             const r = await reverseGeocode(p.lat, p.lng, S.settings);
             cap.name = r.name;
             cap.city = r.city || cap.city;
+            cap.province = r.province || cap.province;
           } catch {
           }
         }
@@ -1379,9 +1529,9 @@ window.L = window.L || window.leaflet;
     } else {
       const groups = /* @__PURE__ */ new Map();
       for (const { p } of list) {
-        const city = (p.city || "").trim() || "\u672A\u5206\u7EC4";
-        if (!groups.has(city)) groups.set(city, []);
-        groups.get(city).push(p);
+        const key = (p.province || "").trim() || (p.city || "").trim() || "\u672A\u5206\u7EC4";
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(p);
       }
       const arr = [...groups.entries()].sort((a, b) => {
         if (a[0] === "\u672A\u5206\u7EC4") return 1;
@@ -1393,7 +1543,11 @@ window.L = window.L || window.leaflet;
           ${items.map((p) => {
           const es = S.entriesByPlace.get(p.id) || [];
           const st = statusOf(p, es);
-          const sub = es.length ? `${es.length} \u6761 \xB7 ${fmtRelative(es[es.length - 1].capturedAt)}` : "\u8FD8\u6CA1\u8BB0\u5F55";
+          const where = (p.city || "").trim();
+          const sub = [
+            where,
+            es.length ? `${es.length} \u6761 \xB7 ${fmtRelative(es[es.length - 1].capturedAt)}` : "\u8FD8\u6CA1\u8BB0\u5F55"
+          ].filter(Boolean).join(" \xB7 ");
           return `<div class="li" data-id="${esc(p.id)}">
                 <div class="n ${st}">${es.length || "\xB7"}</div>
                 <div class="m"><b>${esc(p.name)}</b><span>${esc(sub)}</span></div>
@@ -1603,19 +1757,29 @@ window.L = window.L || window.leaflet;
     document.getElementById("btn-search").onclick = async () => {
       const r = await searchModal({ settings: S.settings, local: annotated() });
       if (!r) return;
-      jumpTo(r.lat, r.lng, 15);
-      openCapture({ latlng: { lat: r.lat, lng: r.lng }, name: r.name, city: r.city });
+      jumpTo(r.lat, r.lng, 16);
+      if (r.placeId) {
+        const p = S.places.find((x) => x.id === r.placeId);
+        if (p) {
+          showPlaceCard(p);
+          return;
+        }
+      }
+      showNewSpotCard(r);
     };
     document.getElementById("btn-locate").onclick = async () => {
       toast("\u5B9A\u4F4D\u4E2D\u2026", 1200);
       try {
         const p = await currentPosition();
-        jumpTo(p.lat, p.lng, 15);
-        toast("\u8FD9\u662F\u4F60\u73B0\u5728\u7684\u4F4D\u7F6E");
+        showLocate(p.lat, p.lng, p.accuracy);
+        const acc = Math.round(p.accuracy || 0);
+        toast(acc ? `\u5B9A\u4F4D\u7CBE\u5EA6\u7EA6 \xB1${acc} \u7C73\uFF0C\u53EF\u4EE5\u62D6\u5730\u56FE\u5FAE\u8C03` : "\u5DF2\u5B9A\u4F4D", 2800);
       } catch (err) {
         toast(err.message, 3200);
       }
     };
+    document.getElementById("zoom-in").onclick = () => zoomBy(1);
+    document.getElementById("zoom-out").onclick = () => zoomBy(-1);
     const ta = document.getElementById("cap-text");
     ta.addEventListener("input", () => {
       if (cap) cap.dirty = true;
