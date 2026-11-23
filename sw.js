@@ -1,5 +1,5 @@
 /* 离线优先：壳子先缓存，瓦片按需存最近看过的 */
-const VERSION = 'im-flat-mwtcu014';
+const VERSION = 'im-flat-mwtd9z1v';
 const SHELL = [
   './',
   './index.html',

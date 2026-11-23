@@ -87,12 +87,42 @@ window.L = window.L || window.leaflet;
     async setMeta(key, value) {
       return this.put("meta", { key, value });
     },
-    async estimate() {
-      if (!navigator.storage || !navigator.storage.estimate) return null;
+    /** 自己算占用：navigator.storage.estimate() 在 Chrome 里报得极不准 */
+    async stats() {
+      const [photos, places2, entries] = await Promise.all([
+        this.all("photos"),
+        this.all("places"),
+        this.all("entries")
+      ]);
+      const photoBytes = photos.reduce((n, p) => n + (p.blob && p.blob.size || 0), 0);
+      const textBytes = new Blob([JSON.stringify(places2), JSON.stringify(entries)]).size;
+      let tiles = 0;
       try {
-        return await navigator.storage.estimate();
+        if (window.caches) {
+          for (const name of await caches.keys()) {
+            if (!name.includes("-tiles")) continue;
+            const cache = await caches.open(name);
+            tiles += (await cache.keys()).length;
+          }
+        }
       } catch {
-        return null;
+      }
+      return {
+        photoBytes,
+        textBytes,
+        tiles,
+        places: places2.length,
+        entries: entries.length,
+        photos: photos.length
+      };
+    },
+    async clearTiles() {
+      try {
+        const keys = await caches.keys();
+        await Promise.all(keys.filter((k) => k.includes("-tiles")).map((k) => caches.delete(k)));
+        return true;
+      } catch {
+        return false;
       }
     },
     async wipe() {
@@ -114,6 +144,7 @@ window.L = window.L || window.leaflet;
   function adminLevelFor(zoom2) {
     if (zoom2 <= 7) return "province";
     if (zoom2 <= 10) return "city";
+    if (zoom2 <= 12) return "district";
     return null;
   }
   function groupPlaces(places2, zoom2) {
@@ -122,9 +153,9 @@ window.L = window.L || window.leaflet;
     if (level) {
       const map2 = /* @__PURE__ */ new Map();
       for (const p of places2) {
-        const raw = level === "province" ? p.province : p.city;
+        const raw = level === "province" ? p.province : level === "city" ? p.city : p.district || p.city;
         const label = String(raw || "").trim() || "\u672A\u5F52\u7C7B";
-        const key = level === "city" ? label + "@" + (p.province || "") : label;
+        const key = level === "province" ? label : label + "@" + (p.city || p.province || "");
         let g = map2.get(key);
         if (!g) {
           g = { kind: "admin", level, label, items: [], lat: 0, lng: 0 };
@@ -1112,78 +1143,33 @@ window.L = window.L || window.leaflet;
     }
     return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + " " + u[i];
   }
-  function swipeToDelete(row, { onTap, onDelete, label = "\u5220\u9664" } = {}) {
-    if (!row || row.dataset.swipe === "1") return;
-    row.dataset.swipe = "1";
-    const wrap2 = document.createElement("div");
-    wrap2.className = "swipe";
-    row.parentNode.insertBefore(wrap2, row);
-    const btn = document.createElement("button");
-    btn.className = "swipe-del";
-    btn.textContent = label;
-    wrap2.appendChild(btn);
-    wrap2.appendChild(row);
-    row.classList.add("swipe-row");
-    const ACTION = 78;
-    let open = false;
-    let dragging = false;
-    let moved = false;
-    let startX = 0;
-    let startY = 0;
-    const setOpen = (v) => {
-      open = v;
-      row.style.transition = "transform .18s ease";
-      row.style.transform = v ? `translateX(-${ACTION}px)` : "translateX(0)";
-      wrap2.classList.toggle("open", v);
-    };
-    row.style.touchAction = "pan-y";
-    row.addEventListener("pointerdown", (e) => {
-      dragging = true;
-      moved = false;
-      startX = e.clientX;
-      startY = e.clientY;
-      row.style.transition = "none";
-      try {
-        row.setPointerCapture(e.pointerId);
-      } catch {
-      }
+  function bindLongPress(node, { onTap, onLongPress, delay = 450 } = {}) {
+    let timer = null;
+    let fired = false;
+    let sx = 0;
+    let sy = 0;
+    const cancel = () => clearTimeout(timer);
+    node.addEventListener("pointerdown", (e) => {
+      fired = false;
+      sx = e.clientX;
+      sy = e.clientY;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        fired = true;
+        if (navigator.vibrate) navigator.vibrate(12);
+        onLongPress && onLongPress();
+      }, delay);
     });
-    row.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
-      const dx = e.clientX - startX;
-      const dy = e.clientY - startY;
-      if (!moved) {
-        if (Math.abs(dx) < 8) return;
-        if (Math.abs(dy) > Math.abs(dx)) {
-          dragging = false;
-          return;
-        }
-        moved = true;
-      }
-      const base = open ? -ACTION : 0;
-      const x = Math.max(-ACTION, Math.min(0, base + dx));
-      row.style.transform = `translateX(${x}px)`;
+    node.addEventListener("pointermove", (e) => {
+      if (Math.abs(e.clientX - sx) > 10 || Math.abs(e.clientY - sy) > 10) cancel();
     });
-    const finish = (e) => {
-      if (!dragging) return;
-      dragging = false;
-      const dx = (e.clientX || startX) - startX;
-      setOpen(open ? dx < 30 : dx < -30);
-    };
-    row.addEventListener("pointerup", finish);
-    row.addEventListener("pointercancel", () => {
-      dragging = false;
-      setOpen(open);
-    });
-    row.addEventListener("click", (e) => {
-      if (moved) {
-        moved = false;
-        e.preventDefault();
-        e.stopPropagation();
-        return;
-      }
-      if (open) {
-        setOpen(false);
+    node.addEventListener("pointerup", cancel);
+    node.addEventListener("pointercancel", cancel);
+    node.addEventListener("pointerleave", cancel);
+    node.addEventListener("contextmenu", (e) => e.preventDefault());
+    node.addEventListener("click", (e) => {
+      if (fired) {
+        fired = false;
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -1193,12 +1179,6 @@ window.L = window.L || window.leaflet;
         e.stopPropagation();
         onTap();
       }
-    });
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setOpen(false);
-      onDelete && onDelete();
     });
   }
 
@@ -1316,7 +1296,7 @@ window.L = window.L || window.leaflet;
   }
 
   // js/app.js
-  var APP_VERSION = "0.6.1";
+  var APP_VERSION = "0.7.0";
   var APP_BUILD = window.__BUILD__ || "dev";
   var S = {
     places: [],
@@ -1440,6 +1420,10 @@ window.L = window.L || window.leaflet;
   function show(name) {
     for (const [key, id] of Object.entries(VIEWS)) {
       document.getElementById(id).classList.toggle("active", key === name);
+    }
+    if (name !== "list") {
+      selecting = false;
+      chosen.clear();
     }
     const focus = name !== "map" && name !== "list";
     document.body.classList.toggle("focus", focus);
@@ -1948,9 +1932,9 @@ window.L = window.L || window.leaflet;
     document.querySelectorAll("#pl-body .tl-item").forEach((node) => {
       const id = node.dataset.entry;
       const entry = es.find((e) => e.id === id);
-      swipeToDelete(node, {
+      bindLongPress(node, {
         onTap: () => openEntry(id),
-        onDelete: () => entry && deleteEntry(entry)
+        onLongPress: () => entry && deleteEntry(entry)
       });
     });
     document.getElementById("pl-more").onclick = async () => {
@@ -1995,6 +1979,30 @@ window.L = window.L || window.leaflet;
     }
     location.hash = "#/";
   }
+  async function deleteSelected() {
+    const ids = [...chosen];
+    if (!ids.length) return;
+    const ok = await confirmBox({
+      title: `\u5220\u6389\u8FD9 ${ids.length} \u4E2A\u5730\u70B9\uFF1F`,
+      text: "\u91CC\u9762\u7684\u8BB0\u5F55\u548C\u7167\u7247\u4F1A\u4E00\u8D77\u5220\u6389\uFF0C\u5220\u4E86\u627E\u4E0D\u56DE\u6765\u3002",
+      okText: "\u5220\u9664",
+      danger: true
+    });
+    if (!ok) return;
+    for (const id of ids) {
+      const es = S.entriesByPlace.get(id) || [];
+      for (const e of es) {
+        for (const ph of e.photos || []) await db.del("photos", ph);
+        await db.del("entries", e.id);
+      }
+      await db.del("places", id);
+    }
+    chosen.clear();
+    selecting = false;
+    await reload();
+    toast("\u5DF2\u5220\u9664");
+    renderList();
+  }
   async function deleteEntry(entry) {
     const ok = await confirmBox({
       title: "\u5220\u6389\u8FD9\u6761\u8BB0\u5F55\uFF1F",
@@ -2010,6 +2018,8 @@ window.L = window.L || window.leaflet;
     route();
   }
   var listFilter = "wish";
+  var selecting = false;
+  var chosen = /* @__PURE__ */ new Set();
   async function renderList() {
     show("list");
     const counts = { wish: 0, visited: 0, done: 0 };
@@ -2060,6 +2070,7 @@ window.L = window.L || window.leaflet;
             es.length ? `${es.length} \u6761 \xB7 ${fmtRelative(es[es.length - 1].capturedAt)}` : "\u8FD8\u6CA1\u8BB0\u5F55"
           ].filter(Boolean).join(" \xB7 ");
           return `<div class="li" data-id="${esc(p.id)}">
+                ${selecting ? `<i class="tick${chosen.has(p.id) ? " on" : ""}"></i>` : ""}
                 <div class="n ${st}">${es.length || "\xB7"}</div>
                 <div class="m"><b>${esc(p.name)}</b><span>${esc(sub)}</span></div>
                 <div class="chev">\u203A</div>
@@ -2068,7 +2079,18 @@ window.L = window.L || window.leaflet;
         </div>`
       ).join("");
     }
-    document.getElementById("list-body").innerHTML = banner + bar + groupsHtml;
+    const selbar = selecting ? `<div class="selbar"><span>\u5DF2\u9009 ${chosen.size} \u4E2A</span><button class="ghost" id="sel-cancel">\u53D6\u6D88</button><button class="danger" id="sel-del">\u5220\u9664</button></div>` : "";
+    document.getElementById("list-body").innerHTML = banner + selbar + bar + groupsHtml;
+    const cancelBtn = document.getElementById("sel-cancel");
+    if (cancelBtn) {
+      cancelBtn.onclick = () => {
+        selecting = false;
+        chosen.clear();
+        renderList();
+      };
+    }
+    const delBtn = document.getElementById("sel-del");
+    if (delBtn) delBtn.onclick = () => deleteSelected();
     const bannerBtn = document.getElementById("banner-export");
     if (bannerBtn) {
       bannerBtn.onclick = async () => {
@@ -2084,22 +2106,29 @@ window.L = window.L || window.leaflet;
     });
     document.querySelectorAll("#list-body .li").forEach((node) => {
       const id = node.dataset.id;
-      const p = S.places.find((x) => x.id === id);
-      swipeToDelete(node, {
+      bindLongPress(node, {
+        onLongPress: () => {
+          selecting = true;
+          chosen.add(id);
+          renderList();
+        },
         onTap: () => {
+          if (selecting) {
+            if (chosen.has(id)) chosen.delete(id);
+            else chosen.add(id);
+            if (!chosen.size) selecting = false;
+            renderList();
+            return;
+          }
           S.backTo = "#/list";
           location.hash = "#/place/" + id;
-        },
-        onDelete: () => {
-          if (p) deletePlace(p, S.entriesByPlace.get(id) || [], true);
         }
       });
     });
   }
   async function renderSettings() {
     show("settings");
-    const est = await db.estimate();
-    const usage = est && est.usage ? fmtBytes(est.usage) : "\u672A\u77E5";
+    const s = await db.stats();
     document.getElementById("st-body").innerHTML = `
     <div class="set-sec">\u5730\u56FE\u670D\u52A1\uFF08\u53EF\u9009\uFF09</div>
     <div class="set-item" style="display:block">
@@ -2126,9 +2155,16 @@ window.L = window.L || window.leaflet;
       <div class="lbl"><b>\u5BFC\u5165\u5907\u4EFD</b><span>\u6309 id \u5408\u5E76\uFF0C\u4E0D\u4F1A\u8986\u76D6\u5DF2\u6709\u7684</span></div>
       <button class="set-btn" id="set-import">\u5BFC\u5165</button>
     </div>
+    <div class="set-item" style="display:block">
+      <div class="lbl">
+        <b>\u5B9E\u9645\u5360\u7528</b>
+        <span>${s.places} \u4E2A\u5730\u70B9 \xB7 ${s.entries} \u6761\u8BB0\u5F55 \xB7 ${s.photos} \u5F20\u7167\u7247<br>
+        \u7167\u7247 ${fmtBytes(s.photoBytes)} \xB7 \u6587\u5B57 ${fmtBytes(s.textBytes)} \xB7 \u7F13\u5B58 ${s.tiles} \u5F20\u74E6\u7247</span>
+      </div>
+    </div>
     <div class="set-item">
-      <div class="lbl"><b>\u5360\u7528</b><span>${S.places.length} \u4E2A\u5730\u70B9 \xB7 ${S.entries.length} \u6761\u8BB0\u5F55</span></div>
-      <span class="val">${usage}</span>
+      <div class="lbl"><b>\u5730\u56FE\u7F13\u5B58</b><span>\u770B\u8FC7\u7684\u74E6\u7247\u3002\u5220\u4E86\u4E0D\u5F71\u54CD\u8BB0\u5F55\uFF0C\u53EA\u662F\u4E0B\u6B21\u8981\u91CD\u65B0\u4E0B\u8F7D</span></div>
+      <button class="set-btn" id="set-cleartiles">\u6E05\u7406</button>
     </div>
 
     <div class="set-sec">\u5371\u9669\u64CD\u4F5C</div>
@@ -2178,6 +2214,14 @@ window.L = window.L || window.leaflet;
     document.getElementById("set-export").onclick = async (e) => {
       const ok = await doExport(e.currentTarget);
       if (ok) renderSettings();
+    };
+    document.getElementById("set-cleartiles").onclick = async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = "\u6E05\u7406\u4E2D\u2026";
+      const ok = await db.clearTiles();
+      toast(ok ? "\u5730\u56FE\u7F13\u5B58\u5DF2\u6E05\u7406" : "\u6E05\u7406\u5931\u8D25\uFF0C\u53EF\u80FD\u662F\u6D4F\u89C8\u5668\u4E0D\u8BA9");
+      renderSettings();
     };
     document.getElementById("set-reload").onclick = async (e) => {
       const btn = e.currentTarget;

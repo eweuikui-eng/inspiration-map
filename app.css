@@ -1033,3 +1033,19 @@ body.focus .toast{bottom:calc(var(--safe-b) + 28px)}
   display:grid;place-items:center;border:0;
 }
 .swipe-del:active{background:#A62F22}
+
+/* ---------- 多选 ---------- */
+.selbar{
+  display:flex;align-items:center;gap:8px;margin:12px 16px 4px;padding:10px 14px;
+  background:var(--ink);color:#fff;border-radius:14px;font-size:14px;
+}
+.selbar span{flex:1}
+.selbar button{height:30px;padding:0 14px;border-radius:15px;font-size:13px;font-weight:600}
+.selbar .ghost{background:rgba(255,255,255,.16);color:#fff}
+.selbar .danger{background:#E2543A;color:#fff}
+.tick{
+  width:22px;height:22px;flex:0 0 22px;border-radius:50%;border:1.5px solid #C9BFB2;
+  display:grid;place-items:center;font-size:12px;color:#fff;font-style:normal;
+}
+.tick.on{background:var(--accent);border-color:var(--accent)}
+.tick.on::after{content:'✓'}
