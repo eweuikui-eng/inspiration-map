@@ -1,5 +1,5 @@
 /* 离线优先：壳子先缓存，瓦片按需存最近看过的 */
-const VERSION = 'im-flat-mwta8lok';
+const VERSION = 'im-flat-mwtbum3c';
 const SHELL = [
   './',
   './index.html',
@@ -7,6 +7,7 @@ const SHELL = [
   './app.bundle.js',
   './icon.png',
   './manifest.webmanifest',
+  './cn-cities.json',
 ];
 
 self.addEventListener('install', (event) => {
@@ -47,7 +48,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
 
   // 地图瓦片
-  if (url.hostname.endsWith('autonavi.com')) {
+  if (url.hostname.endsWith('autonavi.com') || url.hostname.endsWith('datav.aliyun.com')) {
     event.respondWith(
       (async () => {
         const cache = await caches.open(VERSION + '-tiles');

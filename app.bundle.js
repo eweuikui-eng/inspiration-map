@@ -242,9 +242,15 @@ window.L = window.L || window.leaflet;
   }
 
   // js/map.js
-  var TILE = "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}";
+  var TILE_ROAD = "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}";
+  var TILE_SAT = "https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}";
   var map = null;
   var layer = null;
+  var baseRoad = null;
+  var baseSat = null;
+  var baseType = "road";
+  var districtLayer = null;
+  var districtItems = [];
   var locateLayer = null;
   var places = [];
   var handlers = {};
@@ -259,11 +265,17 @@ window.L = window.L || window.leaflet;
       maxZoom: 18,
       worldCopyJump: true
     }).setView([currentCenter.lat, currentCenter.lng], 4);
-    L.tileLayer(TILE, {
+    baseRoad = L.tileLayer(TILE_ROAD, {
       subdomains: ["1", "2", "3", "4"],
       maxZoom: 18,
+      className: "base-road",
       attribution: "\xA9 \u9AD8\u5FB7\u5730\u56FE"
     }).addTo(map);
+    baseSat = L.tileLayer(TILE_SAT, {
+      subdomains: ["1", "2", "3", "4"],
+      maxZoom: 18,
+      className: "base-sat"
+    });
     layer = L.layerGroup().addTo(map);
     map.on("moveend zoomend", () => {
       currentCenter = map.getCenter();
@@ -306,7 +318,7 @@ window.L = window.L || window.leaflet;
     return map;
   }
   var draftMarker = null;
-  function showDraft(latlng) {
+  function showDraft(latlng, onMove) {
     clearDraft();
     if (!map) return;
     const icon = L.divIcon({
@@ -315,11 +327,82 @@ window.L = window.L || window.leaflet;
       iconSize: [0, 0],
       iconAnchor: [0, 0]
     });
-    draftMarker = L.marker(latlng, { icon, keyboard: false, interactive: false }).addTo(map);
+    draftMarker = L.marker(latlng, {
+      icon,
+      keyboard: false,
+      draggable: true,
+      autoPan: true
+    }).addTo(map);
+    if (onMove) {
+      draftMarker.on("dragend", () => {
+        const p = draftMarker.getLatLng();
+        onMove(p.lat, p.lng);
+      });
+    }
+  }
+  function zoomToPoint(latlng, minZoom = 17) {
+    if (!map) return;
+    if (map.getZoom() >= minZoom) return;
+    map.flyTo(latlng, minZoom, { duration: 0.5 });
+  }
+  function setBase(type) {
+    if (!map) return;
+    baseType = type;
+    if (type === "sat") {
+      if (baseRoad) map.removeLayer(baseRoad);
+      if (baseSat) baseSat.addTo(map);
+    } else {
+      if (baseSat) map.removeLayer(baseSat);
+      if (baseRoad) baseRoad.addTo(map);
+    }
+  }
+  function getBase() {
+    return baseType;
   }
   function clearDraft() {
     if (draftMarker && map) map.removeLayer(draftMarker);
     draftMarker = null;
+  }
+  function setDistricts(items) {
+    districtItems = items || [];
+    drawDistricts();
+    render(true);
+  }
+  function drawDistricts() {
+    if (!map) return;
+    if (!districtLayer) districtLayer = L.layerGroup().addTo(map);
+    districtLayer.clearLayers();
+    for (const d of districtItems) {
+      if (!d.feature) continue;
+      const poly = L.geoJSON(d.feature, {
+        style: {
+          color: "#E2543A",
+          weight: 1.6,
+          opacity: 0.75,
+          fillColor: "#E2543A",
+          fillOpacity: 0.1,
+          dashArray: "6 5"
+        }
+      });
+      poly.on("click", (e) => {
+        L.DomEvent.stopPropagation(e);
+        handlers.onDistrictPick && handlers.onDistrictPick(d);
+      });
+      poly.addTo(districtLayer);
+      const c = poly.getBounds().getCenter();
+      const icon = L.divIcon({
+        className: "pin-wrap",
+        html: `<div class="pin admin"><span>${escapeHtml(d.name)}</span><b>${d.count || 0}</b></div>`,
+        iconSize: [0, 0],
+        iconAnchor: [0, 0]
+      });
+      const label = L.marker([c.lat, c.lng], { icon, keyboard: false });
+      label.on("click", (e) => {
+        L.DomEvent.stopPropagation(e);
+        handlers.onDistrictPick && handlers.onDistrictPick(d);
+      });
+      label.addTo(districtLayer);
+    }
   }
   function setPlaces(list) {
     places = list || [];
@@ -335,7 +418,9 @@ window.L = window.L || window.leaflet;
     lastZoom = zoom2;
     layer.clearLayers();
     const view = map.getBounds().pad(0.6);
-    for (const c of groupPlaces(places, zoom2)) {
+    const drawn = new Set(districtItems.filter((d) => d.feature).map((d) => d.id));
+    const pool = zoom2 >= 11 ? places.filter((p) => !(p.level === "district" && drawn.has(p.id))) : places;
+    for (const c of groupPlaces(pool, zoom2)) {
       if (!view.contains([c.lat, c.lng])) continue;
       if (c.kind === "admin") {
         const icon2 = L.divIcon({
@@ -555,11 +640,12 @@ window.L = window.L || window.leaflet;
     }
     return out;
   }
-  async function searchPlaces(q, settings = {}) {
+  async function searchPlaces(q, settings = {}, bias = null) {
     const query = q.trim();
     if (!query) return [];
     if (hasKey(settings)) {
-      const url2 = `${AMAP_SEARCH}?key=${encodeURIComponent(settings.amapKey.trim())}&keywords=${encodeURIComponent(query)}&offset=12&page=1&extensions=base`;
+      const loc = bias ? `&location=${bias.lng.toFixed(6)},${bias.lat.toFixed(6)}` : "";
+      const url2 = `${AMAP_SEARCH}?key=${encodeURIComponent(settings.amapKey.trim())}&keywords=${encodeURIComponent(query)}&offset=12&page=1&extensions=base${loc}`;
       const data2 = await fetchJSON(url2, 1e4);
       if (data2.status !== "1") throw new Error(data2.info || "\u9AD8\u5FB7\u63A5\u53E3\u51FA\u9519");
       return (data2.pois || []).map((p) => {
@@ -574,17 +660,25 @@ window.L = window.L || window.leaflet;
         };
       });
     }
-    const url = `${PHOTON}/api/?q=${encodeURIComponent(query)}&limit=15`;
+    let biasQS = "";
+    if (bias) {
+      const w = gcj2wgs(bias.lat, bias.lng);
+      biasQS = `&lat=${w.lat.toFixed(6)}&lon=${w.lng.toFixed(6)}`;
+    }
+    const url = `${PHOTON}/api/?q=${encodeURIComponent(query)}&limit=20${biasQS}`;
     const data = await fetchJSON(url, 12e3);
     const list = (data.features || []).map((f) => {
       const p = f.properties || {};
       const [lng, lat] = f.geometry && f.geometry.coordinates || [0, 0];
       const g = wgs2gcj(lat, lng);
+      const admin = ["district", "city", "county"].includes(p.type) && p.osm_key === "place";
       return {
         name: p.name || p.street || p.locality || p.district || p.city || "\u672A\u547D\u540D",
         address: [p.district, p.city, p.state, p.country].filter(Boolean).join(" \xB7 "),
         city: p.city || p.state || "",
         province: p.state || "",
+        district: admin && p.type === "district" ? p.name : "",
+        kind: admin ? "district" : "place",
         lat: g.lat,
         lng: g.lng
       };
@@ -619,6 +713,99 @@ window.L = window.L || window.leaflet;
       city: p.city || p.state || "",
       province: p.state || ""
     };
+  }
+
+  // js/districts.js
+  var GEO_BASE = "https://geo.datav.aliyun.com/areas_v3/bound";
+  var indexPromise = null;
+  var cityGeo = /* @__PURE__ */ new Map();
+  function loadIndex() {
+    if (!indexPromise) {
+      indexPromise = fetch("cn-cities.json").then((r) => r.ok ? r.json() : []).catch(() => []);
+    }
+    return indexPromise;
+  }
+  async function findCity(name) {
+    const key = String(name || "").trim();
+    if (!key) return null;
+    const idx = await loadIndex();
+    const exact = idx.find((c) => c.name === key);
+    if (exact) return exact;
+    return idx.find((c) => key.includes(c.name) || c.name.includes(key)) || null;
+  }
+  async function loadCityGeo(cityName) {
+    const city = await findCity(cityName);
+    if (!city) return null;
+    if (cityGeo.has(city.adcode)) return cityGeo.get(city.adcode);
+    const res = await fetch(`${GEO_BASE}/${city.adcode}_full.json`, {
+      signal: AbortSignal.timeout(2e4)
+    });
+    if (!res.ok) throw new Error("\u8FB9\u754C\u6570\u636E\u6CA1\u53D6\u5230");
+    const geo = await res.json();
+    cityGeo.set(city.adcode, geo);
+    return geo;
+  }
+  var strip = (s) => String(s || "").replace(/[区县旗市]$/, "");
+  async function districtFeature(cityName, districtName) {
+    const geo = await loadCityGeo(cityName);
+    if (!geo || !Array.isArray(geo.features)) return null;
+    const want = strip(districtName);
+    const exact = geo.features.find((f) => f.properties.name === districtName);
+    if (exact) return exact;
+    return geo.features.find((f) => strip(f.properties.name) === want) || null;
+  }
+
+  // js/address.js
+  var HOUSE = /(\d+号(?:附\d+号)?|\d+-\d+号)/;
+  function parseAddress(input) {
+    const raw = String(input || "").replace(/\s+/g, "").trim();
+    const out = { raw, province: "", city: "", district: "", street: "", road: "", house: "", place: "", extra: "" };
+    if (!raw) return out;
+    let head = raw;
+    const mh = raw.match(HOUSE);
+    if (mh) {
+      head = raw.slice(0, mh.index);
+      out.house = mh[1];
+      out.extra = raw.slice(mh.index + mh[1].length);
+    }
+    const NAME2 = "\u5E02\u533A\u53BF\u9547\u4E61\u9053\u8857\u7701";
+    const cutEnd = (re, key) => {
+      const m = head.match(re);
+      if (!m || !m[1]) return false;
+      out[key] = m[1];
+      head = head.slice(0, head.length - m[0].length);
+      return true;
+    };
+    const cutStart = (re, key) => {
+      const m = head.match(re);
+      if (!m || !m[1]) return false;
+      out[key] = m[1];
+      head = head.slice(m[0].length);
+      return true;
+    };
+    cutEnd(new RegExp(`([^${NAME2}]+?(?:\u8DEF|\u8857|\u5927\u9053|\u5927\u8857|\u5DF7|\u5F04|\u80E1\u540C|\u9053))$`), "road");
+    cutEnd(new RegExp(`([^${NAME2}]+?(?:\u8857\u9053|\u9547|\u4E61))$`), "street");
+    cutStart(/^(.+?(?:省|自治区|特别行政区))/, "province");
+    cutStart(/^(.+?(?:市|自治州|地区|盟))/, "city");
+    cutStart(/^(.+?(?:区|县|旗))/, "district");
+    if (head) out.place = head;
+    return out;
+  }
+  function isAddressLike(text) {
+    const t = String(text || "").trim();
+    if (t.replace(/\s+/g, "").length < 6) return false;
+    return /(号|路|街|大道|巷|弄|区|县|镇|乡|市|省)/.test(t);
+  }
+  function addressScore(parsed) {
+    return ["province", "city", "district", "street", "road", "house", "place"].filter((k) => parsed[k]).length;
+  }
+  function searchTermFor(parsed) {
+    if (parsed.road) return [parsed.road, parsed.district || parsed.city].filter(Boolean).join(" ");
+    if (parsed.street) return [parsed.street, parsed.city].filter(Boolean).join(" ");
+    if (parsed.district) return [parsed.district, parsed.city].filter(Boolean).join(" ");
+    if (parsed.city) return parsed.city;
+    if (parsed.place) return [parsed.place, parsed.city].filter(Boolean).join(" ");
+    return parsed.raw;
   }
 
   // js/ui.js
@@ -707,7 +894,7 @@ window.L = window.L || window.leaflet;
       m.querySelector("#m-cancel").onclick = () => done(-1);
     });
   }
-  function searchModal({ settings = {}, local = [], placeholder = "\u641C\u5730\u540D\uFF0C\u6BD4\u5982\u300C\u6210\u90FD \u7389\u6797\u300D" } = {}) {
+  function searchModal({ settings = {}, local = [], bias = null, placeholder = "\u641C\u5730\u540D\u3001\u5E97\u540D" } = {}) {
     return new Promise((resolve) => {
       const keyed = hasKey(settings);
       const m = openModal(`
@@ -740,6 +927,67 @@ window.L = window.L || window.leaflet;
           };
         });
       };
+      const addressCard = (q) => {
+        const parsed = isAddressLike(q) ? parseAddress(q) : null;
+        if (!parsed || addressScore(parsed) < 3) return { html: "", parsed: null };
+        const bits = [
+          parsed.province,
+          parsed.city,
+          parsed.district,
+          parsed.street,
+          parsed.road,
+          parsed.house,
+          parsed.extra
+        ].filter(Boolean);
+        return {
+          parsed,
+          html: `<div class="result addr" data-addr="1"><div class="r-name">\u89E3\u6790\u8FD9\u4E2A\u5730\u5740<span>${esc(
+            bits.join(" \xB7 ")
+          )}</span></div></div>`
+        };
+      };
+      const pickAddress = async (parsed, node) => {
+        node.classList.add("busy");
+        node.querySelector(".r-name").firstChild.textContent = "\u5B9A\u4F4D\u4E2D\u2026";
+        try {
+          let hit = null;
+          let level = "district";
+          if (parsed.road || parsed.place) {
+            const term = searchTermFor(parsed);
+            const rs = await searchPlaces(term, settings, bias);
+            hit = rs[0] || null;
+            if (hit) level = parsed.road ? "street" : "district";
+          }
+          if (!hit) {
+            const fallback = [parsed.district, parsed.city].filter(Boolean).join(" ") || parsed.city || parsed.raw;
+            const rs = await searchPlaces(fallback, settings, bias);
+            hit = rs[0] || null;
+            level = "district";
+          }
+          if (!hit) throw new Error("\u8FD9\u4E2A\u5730\u5740\u5B9A\u4F4D\u4E0D\u5230\uFF0C\u6362\u4E2A\u5199\u6CD5\u8BD5\u8BD5");
+          const name = (parsed.road || "") + (parsed.house || "") || parsed.district || parsed.place || hit.name;
+          done({
+            name,
+            lat: hit.lat,
+            lng: hit.lng,
+            city: parsed.city || hit.city || "",
+            province: parsed.province || hit.province || "",
+            district: parsed.district || "",
+            address: parsed.raw,
+            level
+          });
+        } catch (err) {
+          node.classList.remove("busy");
+          const tip = document.createElement("p");
+          tip.className = "s-err";
+          tip.textContent = explain(err);
+          node.after(tip);
+        }
+      };
+      const bindAddress = (parsed) => {
+        const node = list.querySelector("[data-addr]");
+        if (node && parsed) node.onclick = () => pickAddress(parsed, node);
+      };
       const showIdle = () => {
         list.innerHTML = keyed ? '<p class="s-tip">\u8F93\u4E24\u4E2A\u5B57\u4EE5\u4E0A\u5F00\u59CB\u641C</p>' : '<p class="s-tip">\u73B0\u5728\u7528\u7684\u662F\u514D\u8D39\u7684 OpenStreetMap \u6570\u636E\uFF0C\u56FD\u5185\u7684\u5C0F\u5E97\u3001\u65B0\u5E97\u53EF\u80FD\u641C\u4E0D\u5230\u3002<br>\u60F3\u641C\u5F97\u51C6\uFF0C\u53BB\u300C\u8BBE\u7F6E\u300D\u586B\u4E00\u4E2A\u9AD8\u5FB7 key\u3002</p>';
       };
@@ -752,21 +1000,27 @@ window.L = window.L || window.leaflet;
           return;
         }
         const hs = hits(q);
-        list.innerHTML = localBlock(hs) + '<p class="s-tip">\u641C\u7D22\u4E2D\u2026</p>';
+        const addr = addressCard(q);
+        list.innerHTML = addr.html + localBlock(hs) + '<p class="s-tip">\u641C\u7D22\u4E2D\u2026</p>';
         bindLocal(hs);
+        bindAddress(addr.parsed);
         timer = setTimeout(async () => {
           const my = ++seq;
           try {
-            const results = await searchPlaces(q, settings);
+            const results = await searchPlaces(q, settings, bias);
             if (my !== seq) return;
             const hs2 = hits(q);
-            let html = localBlock(hs2);
+            const addr2 = addressCard(q);
+            let html = addr2.html + localBlock(hs2);
             if (results.length) {
-              html += '<p class="s-sec">\u5730\u56FE\u4E0A\u627E\u5230\u7684</p>' + results.map(
-                (r, i) => `<div class="result" data-i="${i}"><div class="r-name">${esc(r.name)}<span>${esc(
-                  r.address || ""
-                )}</span></div></div>`
-              ).join("");
+              html += '<p class="s-sec">\u5730\u56FE\u4E0A\u627E\u5230\u7684</p>' + results.map((r, i) => {
+                const d = bias ? haversine(bias, r) : null;
+                const dist = d == null ? "" : d < 1e3 ? `${Math.round(d)} \u7C73` : `${(d / 1e3).toFixed(1)} \u516C\u91CC`;
+                const sub = [dist, r.address || r.city].filter(Boolean).join(" \xB7 ");
+                return `<div class="result" data-i="${i}"><div class="r-name">${esc(
+                  r.name
+                )}<span>${esc(sub)}</span></div></div>`;
+              }).join("");
             } else {
               html += `<p class="s-tip">\u6CA1\u641C\u5230\u300C${esc(
                 q
@@ -774,6 +1028,7 @@ window.L = window.L || window.leaflet;
             }
             list.innerHTML = html;
             bindLocal(hs2);
+            bindAddress(addr2.parsed);
             list.querySelectorAll("[data-i]").forEach((node) => {
               node.onclick = () => done(results[Number(node.dataset.i)]);
             });
@@ -953,7 +1208,7 @@ window.L = window.L || window.leaflet;
   }
 
   // js/app.js
-  var APP_VERSION = "0.4.1";
+  var APP_VERSION = "0.6.0";
   var APP_BUILD = window.__BUILD__ || "dev";
   var S = {
     places: [],
@@ -965,9 +1220,11 @@ window.L = window.L || window.leaflet;
   };
   var cap = null;
   var pending = null;
+  var draftPoint = null;
   var draftTimer = null;
   var mapReady = false;
   var urlCache = /* @__PURE__ */ new Map();
+  var LEVEL_LABEL = { point: "\u7CBE\u786E\u5230\u70B9", street: "\u8857\u9053\u7EA7", district: "\u53EA\u5230\u533A", city: "\u53EA\u5230\u5E02" };
   var VIEWS = {
     map: "view-map",
     list: "view-list",
@@ -987,6 +1244,11 @@ window.L = window.L || window.leaflet;
     await reload(false);
     initMap2();
     bind();
+    const base = await db.meta("base", "road");
+    if (base === "sat") {
+      setBase("sat");
+      document.getElementById("btn-layer").textContent = "\u6807\u51C6";
+    }
     route();
     maybeHint();
     registerSW();
@@ -1001,7 +1263,10 @@ window.L = window.L || window.leaflet;
       if (!S.entriesByPlace.has(e.placeId)) S.entriesByPlace.set(e.placeId, []);
       S.entriesByPlace.get(e.placeId).push(e);
     }
-    if (touchMap && mapReady) syncMap();
+    if (touchMap && mapReady) {
+      syncMap();
+      scheduleDistricts();
+    }
   }
   function annotated() {
     return S.places.map((p) => {
@@ -1012,6 +1277,33 @@ window.L = window.L || window.leaflet;
   function syncMap() {
     setPlaces(annotated());
   }
+  var districtTimer = null;
+  function scheduleDistricts() {
+    clearTimeout(districtTimer);
+    districtTimer = setTimeout(async () => {
+      const list = S.places.filter((p) => p.level === "district" && p.district && p.city);
+      if (!list.length) {
+        setDistricts([]);
+        return;
+      }
+      const out = [];
+      for (const p of list) {
+        let feature = null;
+        try {
+          feature = await districtFeature(p.city, p.district);
+        } catch {
+          feature = null;
+        }
+        out.push({
+          id: p.id,
+          name: p.district,
+          count: (S.entriesByPlace.get(p.id) || []).length,
+          feature
+        });
+      }
+      setDistricts(out);
+    }, 120);
+  }
   function initMap2() {
     initMap(document.getElementById("map"), {
       onPick: onClusterPick,
@@ -1019,7 +1311,11 @@ window.L = window.L || window.leaflet;
         clearDraft();
         openCapture({ latlng });
       },
-      onMapClick
+      onMapClick,
+      onDistrictPick: (d) => {
+        S.backTo = "#/";
+        location.hash = "#/place/" + d.id;
+      }
     });
     mapReady = true;
     syncMap();
@@ -1070,23 +1366,30 @@ window.L = window.L || window.leaflet;
     if (!card.hidden) {
       hideCard();
       clearDraft();
+      draftPoint = null;
       return;
     }
-    showDraft(latlng);
-    showDraftCard(latlng);
+    draftPoint = { lat: latlng.lat, lng: latlng.lng };
+    showDraft(latlng, (lat, lng) => {
+      draftPoint = { lat, lng };
+    });
+    zoomToPoint(latlng, 17);
+    showDraftCard();
   }
-  function showDraftCard(latlng) {
+  function showDraftCard() {
     const card = document.getElementById("map-card");
     card.innerHTML = `
     <div class="mc-main">
       <h3>\u5728\u8FD9\u513F\u8BB0\u4E00\u7B14</h3>
-      <p>\u70B9\u53F3\u8FB9\u5F00\u59CB\u5199\uFF1B\u60F3\u6362\u4F4D\u7F6E\uFF0C\u518D\u70B9\u5730\u56FE\u522B\u5904</p>
+      <p>\u84DD\u70B9\u53EF\u4EE5\u62D6\u52A8\uFF0C\u62D6\u5230\u51C6\u4E86\u518D\u70B9\u53F3\u8FB9</p>
     </div>
     <span class="go">\u8BB0\u4E00\u7B14</span>`;
     card.onclick = () => {
+      const p = draftPoint;
       clearDraft();
       hideCard();
-      openCapture({ latlng: { lat: latlng.lat, lng: latlng.lng } });
+      draftPoint = null;
+      if (p) openCapture({ latlng: { lat: p.lat, lng: p.lng } });
     };
     card.hidden = false;
   }
@@ -1113,14 +1416,17 @@ window.L = window.L || window.leaflet;
     card.innerHTML = `
     <div class="mc-main">
       <h3>${esc(r.name)}</h3>
-      <p>\u8FD9\u91CC\u8FD8\u6CA1\u8BB0\u8FC7</p>
+      <p>${esc(r.address || "\u8FD9\u91CC\u8FD8\u6CA1\u8BB0\u8FC7")}</p>
     </div>
     <span class="go">\u8BB0\u4E00\u7B14</span>`;
     card.onclick = () => openCapture({
       latlng: { lat: r.lat, lng: r.lng },
       name: r.name,
       city: r.city,
-      province: r.province
+      province: r.province,
+      district: r.district,
+      address: r.address,
+      level: r.level
     });
     card.hidden = false;
   }
@@ -1145,6 +1451,7 @@ window.L = window.L || window.leaflet;
   }
   function openCapture(opts) {
     clearDraft();
+    draftPoint = null;
     const from = location.hash || "#/";
     const safeFrom = from.startsWith("#/cap") || from.startsWith("#/rec") ? "#/" : from;
     pending = { ...opts, returnTo: safeFrom };
@@ -1172,6 +1479,8 @@ window.L = window.L || window.leaflet;
       city: src.city || "",
       province: src.province || "",
       address: src.address || "",
+      level: src.level || "point",
+      district: src.district || "",
       kind: src.kind || "note",
       text: "",
       photos: [],
@@ -1197,6 +1506,8 @@ window.L = window.L || window.leaflet;
         cap.city = cap.place.city || "";
         cap.province = cap.place.province || cap.province;
         cap.address = cap.place.address || cap.address;
+        cap.level = cap.place.level || cap.level;
+        cap.district = cap.place.district || cap.district;
       }
       cap.savedPhotoIds = (entry.photos || []).slice();
       for (const id of cap.savedPhotoIds) {
@@ -1220,6 +1531,8 @@ window.L = window.L || window.leaflet;
         cap.city = cap.city || cap.place.city || "";
         cap.province = cap.province || cap.place.province || "";
         cap.address = cap.address || cap.place.address || "";
+        cap.level = cap.level || cap.place.level || "point";
+        cap.district = cap.district || cap.place.district || "";
       } else if (src.latlng) {
         const near = nearestPlace(S.places, src.latlng.lat, src.latlng.lng, 120);
         if (near) {
@@ -1327,6 +1640,8 @@ window.L = window.L || window.leaflet;
           city: cap.city || "",
           province: cap.province || "",
           address: cap.address || "",
+          district: cap.district || "",
+          level: cap.level || "point",
           lat: ll.lat,
           lng: ll.lng,
           createdAt: Date.now()
@@ -1409,7 +1724,7 @@ window.L = window.L || window.leaflet;
       { label: "\u7528\u6211\u5F53\u524D\u7684\u4F4D\u7F6E" }
     ]);
     if (act === 0) {
-      const r = await searchModal({ settings: S.settings, local: annotated() });
+      const r = await searchModal({ settings: S.settings, local: annotated(), bias: center() });
       if (!r) return;
       cap.latlng = { lat: r.lat, lng: r.lng };
       cap.name = r.name;
@@ -1479,8 +1794,9 @@ window.L = window.L || window.leaflet;
       <div class="place-meta">
         <span class="badge">${esc(statusLabel(st))}</span>
         <span>${esc(bits.join(" \xB7 "))}</span>
+        ${p.level && p.level !== "point" ? `<span class="badge grey">${esc(LEVEL_LABEL[p.level] || "")}</span>` : ""}
       </div>
-      ${p.address || p.city ? `<div class="place-meta"><span>${esc(p.address || p.city)}</span></div>` : ""}
+      ${p.address ? `<div class="addr-line">${esc(p.address)}</div>` : p.city ? `<div class="place-meta"><span>${esc(p.city)}</span></div>` : ""}
     </div>
     <div class="acts">
       <button class="primary" id="act-main">${st === "wish" ? "\u6211\u53BB\u4E86" : "\u5199\u89C2\u540E\u611F"}</button>
@@ -1838,9 +2154,12 @@ window.L = window.L || window.leaflet;
       }
     });
     document.getElementById("btn-search").onclick = async () => {
-      const r = await searchModal({ settings: S.settings, local: annotated() });
+      const r = await searchModal({ settings: S.settings, local: annotated(), bias: center() });
       if (!r) return;
-      jumpTo(r.lat, r.lng, 16);
+      const isDistrict = r.level === "district" || r.kind === "district";
+      if (!r.level) r.level = isDistrict ? "district" : "point";
+      if (isDistrict && !r.district) r.district = r.name;
+      jumpTo(r.lat, r.lng, isDistrict ? 12 : 17);
       if (r.placeId) {
         const p = S.places.find((x) => x.id === r.placeId);
         if (p) {
@@ -1863,6 +2182,13 @@ window.L = window.L || window.leaflet;
     };
     document.getElementById("zoom-in").onclick = () => zoomBy(1);
     document.getElementById("zoom-out").onclick = () => zoomBy(-1);
+    document.getElementById("btn-layer").onclick = async (e) => {
+      const next = getBase() === "sat" ? "road" : "sat";
+      setBase(next);
+      e.currentTarget.textContent = next === "sat" ? "\u6807\u51C6" : "\u536B\u661F";
+      await db.setMeta("base", next).catch(() => {
+      });
+    };
     const ta = document.getElementById("cap-text");
     ta.addEventListener("input", () => {
       if (cap) cap.dirty = true;

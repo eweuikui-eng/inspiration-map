@@ -700,6 +700,7 @@ img{display:block}
 #map{position:absolute;inset:0;background:#EDE7DC}
 .leaflet-container{font:inherit;background:#EDE7DC}
 .leaflet-tile{filter:saturate(.45) contrast(.94) brightness(1.04)}
+.base-sat{filter:none}
 .leaflet-bottom{bottom:calc(var(--tab-h) + var(--safe-b))}
 body.focus .leaflet-bottom{bottom:0}
 .leaflet-control-attribution{
@@ -733,6 +734,7 @@ body.focus .leaflet-bottom{bottom:0}
 }
 .map-side button{width:40px;height:40px;font-size:19px;line-height:1;display:grid;place-items:center;color:var(--ink)}
 .map-side button+button{border-top:1px solid var(--line)}
+.map-side .layer-btn{font-size:12px;font-weight:600;letter-spacing:0}
 .map-side button:active{background:#F2ECE1}
 
 /* 地图标记 */
@@ -1014,4 +1016,10 @@ body.focus .toast{bottom:calc(var(--safe-b) + 28px)}
   color:#fff;font-size:13px;font-weight:600;white-space:nowrap}
 
 /* 临时落点 */
-.pin.draft{background:#2A6FDB;border-color:#fff;color:#fff;font-size:15px}
+.pin.draft{background:#2A6FDB;border-color:#fff;color:#fff;font-size:15px;box-shadow:0 0 0 6px rgba(42,111,219,.18),0 3px 10px rgba(0,0,0,.3);cursor:grab}
+
+/* ---------- 地址与精度 ---------- */
+.addr-line{font-size:13px;color:var(--muted);line-height:1.65;margin-top:6px;word-break:break-all}
+.result.addr{background:var(--soft);border:1px solid #F0C9BE;border-radius:12px;padding:10px 12px;margin-bottom:6px}
+.result.addr .r-name{color:var(--accent-ink);font-weight:600}
+.result.addr.busy{opacity:.65}
