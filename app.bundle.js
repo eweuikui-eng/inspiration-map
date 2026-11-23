@@ -269,7 +269,7 @@ window.L = window.L || window.leaflet;
       currentCenter = map.getCenter();
       if (map.getZoom() !== lastZoom) render();
     });
-    map.on("click", () => handlers.onBlank && handlers.onBlank());
+    map.on("click", (e) => handlers.onMapClick && handlers.onMapClick(e.latlng));
     const ring = document.createElement("div");
     ring.className = "center-ring";
     map.getContainer().appendChild(ring);
@@ -304,6 +304,22 @@ window.L = window.L || window.leaflet;
     box.addEventListener("mouseleave", cancelPress);
     window.addEventListener("resize", () => map && map.invalidateSize());
     return map;
+  }
+  var draftMarker = null;
+  function showDraft(latlng) {
+    clearDraft();
+    if (!map) return;
+    const icon = L.divIcon({
+      className: "pin-wrap",
+      html: '<div class="pin draft"><span>\uFF0B</span></div>',
+      iconSize: [0, 0],
+      iconAnchor: [0, 0]
+    });
+    draftMarker = L.marker(latlng, { icon, keyboard: false, interactive: false }).addTo(map);
+  }
+  function clearDraft() {
+    if (draftMarker && map) map.removeLayer(draftMarker);
+    draftMarker = null;
   }
   function setPlaces(list) {
     places = list || [];
@@ -866,7 +882,7 @@ window.L = window.L || window.leaflet;
   function todayName() {
     const d = /* @__PURE__ */ new Date();
     const p = (n) => String(n).padStart(2, "0");
-    return `\u7075\u611F\u5730\u56FE-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.zip`;
+    return `\u7075\u611F\u5730\u56FE\u5907\u4EFD-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.zip`;
   }
   async function exportAll() {
     const { blob } = await buildBackup();
@@ -879,10 +895,19 @@ window.L = window.L || window.leaflet;
     try {
       files = fflate.unzipSync(buf);
     } catch {
-      throw new Error("\u8FD9\u4E2A\u6587\u4EF6\u89E3\u4E0D\u5F00\uFF0C\u53EF\u80FD\u4E0D\u662F zip \u5907\u4EFD");
+      throw new Error("\u8FD9\u4E0D\u662F\u4E00\u4E2A zip \u6587\u4EF6\u3002\u5907\u4EFD\u5E94\u8BE5\u662F\u5728\u300C\u8BBE\u7F6E \u2192 \u5BFC\u51FA\u5907\u4EFD\u300D\u91CC\u4E0B\u8F7D\u7684 \u7075\u611F\u5730\u56FE-\u5E74\u6708\u65E5.zip");
     }
-    const jsonKey = Object.keys(files).find((k) => k.endsWith("backup.json"));
-    if (!jsonKey) throw new Error("\u538B\u7F29\u5305\u91CC\u6CA1\u627E\u5230 backup.json");
+    const names = Object.keys(files);
+    if (names.some((k) => /(^|\/)(index\.html|app\.bundle\.js|app\.css)$/.test(k))) {
+      throw new Error("\u8FD9\u662F\u5E94\u7528\u5B89\u88C5\u5305\uFF0C\u4E0D\u662F\u5907\u4EFD\u3002\u5907\u4EFD\u8981\u7528\u300C\u5BFC\u51FA\u5907\u4EFD\u300D\u751F\u6210\u7684\u90A3\u4E2A zip");
+    }
+    const jsonKey = names.find((k) => k.endsWith("backup.json"));
+    if (!jsonKey) {
+      const sample = names.slice(0, 5).map((n) => n.split("/").pop()).join("\u3001");
+      throw new Error(
+        `\u8FD9\u4E2A zip \u91CC\u6CA1\u6709 backup.json\u3002\u5305\u91CC\u662F\uFF1A${sample || "\uFF08\u7A7A\u7684\uFF09"}`
+      );
+    }
     let data;
     try {
       data = JSON.parse(fflate.strFromU8(files[jsonKey]));
@@ -928,6 +953,8 @@ window.L = window.L || window.leaflet;
   }
 
   // js/app.js
+  var APP_VERSION = "0.4.1";
+  var APP_BUILD = window.__BUILD__ || "dev";
   var S = {
     places: [],
     entries: [],
@@ -988,8 +1015,11 @@ window.L = window.L || window.leaflet;
   function initMap2() {
     initMap(document.getElementById("map"), {
       onPick: onClusterPick,
-      onLong: (latlng) => openCapture({ latlng }),
-      onBlank: () => hideCard()
+      onLong: (latlng) => {
+        clearDraft();
+        openCapture({ latlng });
+      },
+      onMapClick
     });
     mapReady = true;
     syncMap();
@@ -1035,6 +1065,31 @@ window.L = window.L || window.leaflet;
   function hideCard() {
     document.getElementById("map-card").hidden = true;
   }
+  function onMapClick(latlng) {
+    const card = document.getElementById("map-card");
+    if (!card.hidden) {
+      hideCard();
+      clearDraft();
+      return;
+    }
+    showDraft(latlng);
+    showDraftCard(latlng);
+  }
+  function showDraftCard(latlng) {
+    const card = document.getElementById("map-card");
+    card.innerHTML = `
+    <div class="mc-main">
+      <h3>\u5728\u8FD9\u513F\u8BB0\u4E00\u7B14</h3>
+      <p>\u70B9\u53F3\u8FB9\u5F00\u59CB\u5199\uFF1B\u60F3\u6362\u4F4D\u7F6E\uFF0C\u518D\u70B9\u5730\u56FE\u522B\u5904</p>
+    </div>
+    <span class="go">\u8BB0\u4E00\u7B14</span>`;
+    card.onclick = () => {
+      clearDraft();
+      hideCard();
+      openCapture({ latlng: { lat: latlng.lat, lng: latlng.lng } });
+    };
+    card.hidden = false;
+  }
   function showPlaceCard(p) {
     const card = document.getElementById("map-card");
     const es = S.entriesByPlace.get(p.id) || [];
@@ -1047,6 +1102,7 @@ window.L = window.L || window.leaflet;
     </div>
     <span class="go">\u203A</span>`;
     card.onclick = () => {
+      clearDraft();
       S.backTo = "#/";
       location.hash = "#/place/" + p.id;
     };
@@ -1088,6 +1144,7 @@ window.L = window.L || window.leaflet;
     card.hidden = false;
   }
   function openCapture(opts) {
+    clearDraft();
     const from = location.hash || "#/";
     const safeFrom = from.startsWith("#/cap") || from.startsWith("#/rec") ? "#/" : from;
     pending = { ...opts, returnTo: safeFrom };
@@ -1114,6 +1171,7 @@ window.L = window.L || window.leaflet;
       name: src.name || "",
       city: src.city || "",
       province: src.province || "",
+      address: src.address || "",
       kind: src.kind || "note",
       text: "",
       photos: [],
@@ -1138,6 +1196,7 @@ window.L = window.L || window.leaflet;
         cap.name = cap.place.name;
         cap.city = cap.place.city || "";
         cap.province = cap.place.province || cap.province;
+        cap.address = cap.place.address || cap.address;
       }
       cap.savedPhotoIds = (entry.photos || []).slice();
       for (const id of cap.savedPhotoIds) {
@@ -1160,6 +1219,7 @@ window.L = window.L || window.leaflet;
         cap.name = cap.name || cap.place.name;
         cap.city = cap.city || cap.place.city || "";
         cap.province = cap.province || cap.place.province || "";
+        cap.address = cap.address || cap.place.address || "";
       } else if (src.latlng) {
         const near = nearestPlace(S.places, src.latlng.lat, src.latlng.lng, 120);
         if (near) {
@@ -1196,6 +1256,7 @@ window.L = window.L || window.leaflet;
         cap.name = r.name;
         cap.city = cap.city || r.city || "";
         cap.province = cap.province || r.province || "";
+        cap.address = cap.address || r.address || "";
         paintCap();
       }).catch(() => {
         if (cap === target && !cap.name) paintCap();
@@ -1265,6 +1326,7 @@ window.L = window.L || window.leaflet;
           name: cap.name || "\u672A\u547D\u540D\u5730\u70B9",
           city: cap.city || "",
           province: cap.province || "",
+          address: cap.address || "",
           lat: ll.lat,
           lng: ll.lng,
           createdAt: Date.now()
@@ -1353,12 +1415,14 @@ window.L = window.L || window.leaflet;
       cap.name = r.name;
       cap.city = r.city || "";
       cap.province = r.province || "";
+      cap.address = r.address || "";
       const exist = r.placeId ? S.places.find((p) => p.id === r.placeId) : null;
       cap.place = exist || nearestPlace(S.places, r.lat, r.lng, 120) || null;
       if (exist) {
         cap.name = exist.name;
         cap.city = exist.city || "";
         cap.province = exist.province || cap.province;
+        cap.address = exist.address || cap.address;
       }
       cap.dirty = true;
       paintCap();
@@ -1416,7 +1480,7 @@ window.L = window.L || window.leaflet;
         <span class="badge">${esc(statusLabel(st))}</span>
         <span>${esc(bits.join(" \xB7 "))}</span>
       </div>
-      ${p.city ? `<div class="place-meta"><span>${esc(p.city)}</span></div>` : ""}
+      ${p.address || p.city ? `<div class="place-meta"><span>${esc(p.address || p.city)}</span></div>` : ""}
     </div>
     <div class="acts">
       <button class="primary" id="act-main">${st === "wish" ? "\u6211\u53BB\u4E86" : "\u5199\u89C2\u540E\u611F"}</button>
@@ -1601,7 +1665,7 @@ window.L = window.L || window.leaflet;
 
     <div class="set-sec">\u6570\u636E</div>
     <div class="set-item">
-      <div class="lbl"><b>\u5BFC\u51FA\u5907\u4EFD</b><span>\u4E00\u4E2A zip\uFF0C\u88C5\u7740\u5168\u90E8\u6587\u5B57\u548C\u7167\u7247 \xB7 ${esc(backupLabel())}</span></div>
+      <div class="lbl"><b>\u5BFC\u51FA\u5907\u4EFD</b><span>\u7075\u611F\u5730\u56FE\u5907\u4EFD-\u65E5\u671F.zip\uFF0C\u88C5\u7740\u5168\u90E8\u6587\u5B57\u548C\u7167\u7247 \xB7 ${esc(backupLabel())}</span></div>
       <button class="set-btn" id="set-export">\u5BFC\u51FA</button>
     </div>
     <div class="set-item">
@@ -1621,7 +1685,11 @@ window.L = window.L || window.leaflet;
 
     <div class="set-sec">\u5173\u4E8E</div>
     <div class="set-item">
-      <div class="lbl"><b>\u7075\u611F\u5730\u56FE 0.3</b><span>\u6570\u636E\u53EA\u5B58\u5728\u8FD9\u53F0\u8BBE\u5907\u4E0A\uFF0C\u4E0D\u4E0A\u4F20\u4EFB\u4F55\u670D\u52A1\u5668\u3002</span></div>
+      <div class="lbl">
+        <b>\u7075\u611F\u5730\u56FE v${APP_VERSION}</b>
+        <span>\u6784\u5EFA\u4E8E ${esc(APP_BUILD)} \xB7 \u6570\u636E\u53EA\u5728\u672C\u673A</span>
+      </div>
+      <button class="set-btn" id="set-reload">\u5237\u65B0\u7F13\u5B58</button>
     </div>
     <p style="padding:6px 16px 40px;font-size:12px;color:var(--muted);line-height:1.7">
       \u5730\u56FE\u74E6\u7247\u6765\u81EA\u9AD8\u5FB7\uFF0C\u5730\u540D\u67E5\u8BE2\u8D70\u4F60\u586B\u7684 key \u6216 OpenStreetMap\u3002
@@ -1656,6 +1724,21 @@ window.L = window.L || window.leaflet;
     document.getElementById("set-export").onclick = async (e) => {
       const ok = await doExport(e.currentTarget);
       if (ok) renderSettings();
+    };
+    document.getElementById("set-reload").onclick = async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = "\u6E05\u7406\u4E2D\u2026";
+      try {
+        const regs = navigator.serviceWorker ? await navigator.serviceWorker.getRegistrations() : [];
+        await Promise.all(regs.map((r) => r.unregister()));
+        if (window.caches) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map((k) => caches.delete(k)));
+        }
+      } catch {
+      }
+      location.reload();
     };
     document.getElementById("set-import").onclick = () => {
       document.getElementById("import-file").click();

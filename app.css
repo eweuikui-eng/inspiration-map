@@ -1012,3 +1012,6 @@ body.focus .toast{bottom:calc(var(--safe-b) + 28px)}
 .banner span{flex:1}
 .banner button{height:30px;padding:0 13px;border-radius:15px;background:var(--accent);
   color:#fff;font-size:13px;font-weight:600;white-space:nowrap}
+
+/* 临时落点 */
+.pin.draft{background:#2A6FDB;border-color:#fff;color:#fff;font-size:15px}
