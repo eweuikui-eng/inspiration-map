@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>灵感地图</title>
+<meta name="description" content="把想去的地方和为什么想去，钉在地图上。">
+<meta name="theme-color" content="#F7F2E9">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="灵感地图">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<section class="view active" id="view-map">
+  <div id="map"></div>
+  <div class="map-top">
+    <button class="searchbar" id="btn-search"><span class="mag">⌕</span> 搜个地方</button>
+    <button class="round-btn" id="btn-locate" aria-label="定位">◎</button>
+  </div>
+  <div class="map-card" id="map-card" hidden></div>
+  <div class="hint" id="hint" hidden>
+    <b>把地图拖到你想记的地方</b>
+    <p>点下面的 ＋，那个地方就是这条记录的地点。不用填任何东西。</p>
+    <button class="hint-ok" id="hint-ok">开始</button>
+  </div>
+</section>
+
+<section class="view" id="view-list">
+  <header class="bar">
+    <h1>清单</h1>
+    <button class="icon-btn" id="list-settings" aria-label="设置">⚙</button>
+  </header>
+  <div class="scroll" id="list-body"></div>
+</section>
+
+<section class="view" id="view-capture">
+  <header class="bar">
+    <button class="icon-btn" id="cap-close" aria-label="关闭">✕</button>
+    <button class="loc-chip" id="cap-loc">地点</button>
+    <button class="text-btn" id="cap-save">保存</button>
+  </header>
+  <div class="scroll editorwrap">
+    <textarea id="cap-text" placeholder="写点什么…" spellcheck="false"></textarea>
+    <div class="photos" id="cap-photos"></div>
+  </div>
+  <footer class="cap-foot">
+    <button class="chip" id="cap-photo">＋ 照片</button>
+    <button class="chip" id="cap-kind">普通记录</button>
+    <span class="draft" id="cap-draft"></span>
+  </footer>
+  <input type="file" id="cap-file" accept="image/*" multiple hidden>
+</section>
+
+<section class="view" id="view-place">
+  <header class="bar">
+    <button class="icon-btn" id="pl-back" aria-label="返回">‹</button>
+    <button class="loc-chip" id="pl-title">地点</button>
+    <button class="icon-btn" id="pl-more" aria-label="更多">⋯</button>
+  </header>
+  <div class="scroll" id="pl-body"></div>
+</section>
+
+<section class="view" id="view-settings">
+  <header class="bar">
+    <button class="icon-btn" id="st-back" aria-label="返回">‹</button>
+    <h1>设置</h1>
+    <span class="bar-pad"></span>
+  </header>
+  <div class="scroll" id="st-body"></div>
+</section>
+
+<nav class="tabbar" id="tabbar">
+  <button class="tab active" data-go="map">地图</button>
+  <button class="tab tab-add" data-go="add">＋</button>
+  <button class="tab" data-go="list">清单</button>
+</nav>
+
+<div class="modal-mask" id="mask" hidden>
+  <div class="modal" id="modal"></div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<input type="file" id="import-file" accept=".zip,application/zip" hidden>
+
+<script src="app.bundle.js"></script>
+</body>
+</html>
