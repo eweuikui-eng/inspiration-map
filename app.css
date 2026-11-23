@@ -1049,3 +1049,14 @@ body.focus .toast{bottom:calc(var(--safe-b) + 28px)}
 }
 .tick.on{background:var(--accent);border-color:var(--accent)}
 .tick.on::after{content:'✓'}
+
+/* ---------- 新版本提示 ---------- */
+.update-bar{
+  position:fixed;left:12px;right:12px;top:calc(env(safe-area-inset-top,0px) + 8px);
+  z-index:1200;display:flex;align-items:center;gap:10px;
+  padding:10px 14px;border-radius:14px;background:var(--ink);color:#fff;
+  box-shadow:0 6px 22px rgba(0,0,0,.28);font-size:13px;
+}
+.update-bar span{flex:1}
+.update-bar button{height:30px;padding:0 14px;border-radius:15px;
+  background:var(--accent);color:#fff;font-size:13px;font-weight:600}

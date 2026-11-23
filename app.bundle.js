@@ -1296,7 +1296,7 @@ window.L = window.L || window.leaflet;
   }
 
   // js/app.js
-  var APP_VERSION = "0.7.0";
+  var APP_VERSION = "0.7.1";
   var APP_BUILD = window.__BUILD__ || "dev";
   var S = {
     places: [],
@@ -1340,6 +1340,7 @@ window.L = window.L || window.leaflet;
     route();
     maybeHint();
     registerSW();
+    setTimeout(checkUpdate, 1500);
   }
   async function reload(touchMap = true) {
     const [places2, entries] = await Promise.all([db.all("places"), db.all("entries")]);
@@ -2223,20 +2224,10 @@ window.L = window.L || window.leaflet;
       toast(ok ? "\u5730\u56FE\u7F13\u5B58\u5DF2\u6E05\u7406" : "\u6E05\u7406\u5931\u8D25\uFF0C\u53EF\u80FD\u662F\u6D4F\u89C8\u5668\u4E0D\u8BA9");
       renderSettings();
     };
-    document.getElementById("set-reload").onclick = async (e) => {
-      const btn = e.currentTarget;
-      btn.disabled = true;
-      btn.textContent = "\u6E05\u7406\u4E2D\u2026";
-      try {
-        const regs = navigator.serviceWorker ? await navigator.serviceWorker.getRegistrations() : [];
-        await Promise.all(regs.map((r) => r.unregister()));
-        if (window.caches) {
-          const keys = await caches.keys();
-          await Promise.all(keys.map((k) => caches.delete(k)));
-        }
-      } catch {
-      }
-      location.reload();
+    document.getElementById("set-reload").onclick = (e) => {
+      e.currentTarget.disabled = true;
+      e.currentTarget.textContent = "\u6E05\u7406\u4E2D\u2026";
+      forceUpdate();
     };
     document.getElementById("set-import").onclick = () => {
       document.getElementById("import-file").click();
@@ -2255,6 +2246,40 @@ window.L = window.L || window.leaflet;
       toast("\u5DF2\u6E05\u7A7A");
       location.hash = "#/";
     };
+  }
+  async function forceUpdate() {
+    try {
+      const regs = navigator.serviceWorker ? await navigator.serviceWorker.getRegistrations() : [];
+      await Promise.all(regs.map((r) => r.unregister()));
+      if (window.caches) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+    } catch {
+    }
+    location.reload();
+  }
+  async function checkUpdate() {
+    try {
+      const res = await fetch("version.json?t=" + Date.now(), { cache: "no-store" });
+      if (!res.ok) return;
+      const v = await res.json();
+      if (!v || !v.build) return;
+      if (v.build === window.__BUILD__) return;
+      showUpdateBar(v.build);
+    } catch {
+    }
+  }
+  var updateShown = false;
+  function showUpdateBar(build) {
+    if (updateShown) return;
+    updateShown = true;
+    const bar = document.createElement("div");
+    bar.id = "update-bar";
+    bar.className = "update-bar";
+    bar.innerHTML = `<span>\u6709\u65B0\u7248\u672C \xB7 ${esc(build)}</span><button id="update-go">\u7ACB\u5373\u66F4\u65B0</button>`;
+    document.body.appendChild(bar);
+    bar.querySelector("#update-go").onclick = () => forceUpdate();
   }
   var BACKUP_DAYS = 7;
   function backupDays() {
@@ -2460,6 +2485,12 @@ window.L = window.L || window.leaflet;
     let reloading = false;
     navigator.serviceWorker.addEventListener("controllerchange", () => {
       if (reloading) return;
+      try {
+        const last = Number(sessionStorage.getItem("sw-reload-at") || 0);
+        if (Date.now() - last < 15e3) return;
+        sessionStorage.setItem("sw-reload-at", String(Date.now()));
+      } catch {
+      }
       reloading = true;
       location.reload();
     });
