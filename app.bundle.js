@@ -628,6 +628,22 @@ window.L = window.L || window.leaflet;
     if (/INVALID_USER_SCODE|INVALID_USER_SIGNATURE/.test(msg)) return "\u8FD9\u4E2A key \u7684\u57DF\u540D\u9650\u5236\u6321\u4F4F\u4E86\uFF0C\u6362\u6210 Web\u670D\u52A1 key";
     return msg;
   }
+  var SETTLEMENT = /* @__PURE__ */ new Set(["city", "town", "village", "hamlet", "suburb", "quarter", "neighbourhood", "borough"]);
+  function kindOf(p) {
+    if (p.osm_key !== "place") return "place";
+    if (p.type === "district") return "district";
+    if (p.type === "city" && SETTLEMENT.has(p.osm_value)) return "city";
+    if (p.type === "county" || p.osm_value === "region") return "area";
+    return "place";
+  }
+  function rankOf(p) {
+    const k = kindOf(p);
+    if (k === "city") return 5;
+    if (k === "place") return 4;
+    if (k === "district") return 3;
+    if (k === "area") return 1;
+    return 2;
+  }
   function dedupe(list, n = 10) {
     const seen = /* @__PURE__ */ new Set();
     const out = [];
@@ -671,18 +687,21 @@ window.L = window.L || window.leaflet;
       const p = f.properties || {};
       const [lng, lat] = f.geometry && f.geometry.coordinates || [0, 0];
       const g = wgs2gcj(lat, lng);
-      const admin = ["district", "city", "county"].includes(p.type) && p.osm_key === "place";
       return {
         name: p.name || p.street || p.locality || p.district || p.city || "\u672A\u547D\u540D",
         address: [p.district, p.city, p.state, p.country].filter(Boolean).join(" \xB7 "),
         city: p.city || p.state || "",
         province: p.state || "",
-        district: admin && p.type === "district" ? p.name : "",
-        kind: admin ? "district" : "place",
+        district: p.type === "district" ? p.name : "",
+        kind: kindOf(p),
+        score: rankOf(p),
         lat: g.lat,
         lng: g.lng
       };
     });
+    const q0 = query.split(/\s+/)[0];
+    for (const r of list) r.exact = r.name === q0 || r.name === query ? 1 : 0;
+    list.sort((a, b) => b.exact - a.exact || b.score - a.score);
     return dedupe(list.filter((r) => r.name && r.name !== "\u672A\u547D\u540D"), 10);
   }
   async function reverseGeocode(lat, lng, settings = {}) {
@@ -1093,6 +1112,95 @@ window.L = window.L || window.leaflet;
     }
     return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + " " + u[i];
   }
+  function swipeToDelete(row, { onTap, onDelete, label = "\u5220\u9664" } = {}) {
+    if (!row || row.dataset.swipe === "1") return;
+    row.dataset.swipe = "1";
+    const wrap2 = document.createElement("div");
+    wrap2.className = "swipe";
+    row.parentNode.insertBefore(wrap2, row);
+    const btn = document.createElement("button");
+    btn.className = "swipe-del";
+    btn.textContent = label;
+    wrap2.appendChild(btn);
+    wrap2.appendChild(row);
+    row.classList.add("swipe-row");
+    const ACTION = 78;
+    let open = false;
+    let dragging = false;
+    let moved = false;
+    let startX = 0;
+    let startY = 0;
+    const setOpen = (v) => {
+      open = v;
+      row.style.transition = "transform .18s ease";
+      row.style.transform = v ? `translateX(-${ACTION}px)` : "translateX(0)";
+      wrap2.classList.toggle("open", v);
+    };
+    row.style.touchAction = "pan-y";
+    row.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      moved = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      row.style.transition = "none";
+      try {
+        row.setPointerCapture(e.pointerId);
+      } catch {
+      }
+    });
+    row.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (!moved) {
+        if (Math.abs(dx) < 8) return;
+        if (Math.abs(dy) > Math.abs(dx)) {
+          dragging = false;
+          return;
+        }
+        moved = true;
+      }
+      const base = open ? -ACTION : 0;
+      const x = Math.max(-ACTION, Math.min(0, base + dx));
+      row.style.transform = `translateX(${x}px)`;
+    });
+    const finish = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      const dx = (e.clientX || startX) - startX;
+      setOpen(open ? dx < 30 : dx < -30);
+    };
+    row.addEventListener("pointerup", finish);
+    row.addEventListener("pointercancel", () => {
+      dragging = false;
+      setOpen(open);
+    });
+    row.addEventListener("click", (e) => {
+      if (moved) {
+        moved = false;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (open) {
+        setOpen(false);
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (onTap) {
+        e.preventDefault();
+        e.stopPropagation();
+        onTap();
+      }
+    });
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+      onDelete && onDelete();
+    });
+  }
 
   // js/backup.js
   async function buildBackup() {
@@ -1208,7 +1316,7 @@ window.L = window.L || window.leaflet;
   }
 
   // js/app.js
-  var APP_VERSION = "0.6.0";
+  var APP_VERSION = "0.6.1";
   var APP_BUILD = window.__BUILD__ || "dev";
   var S = {
     places: [],
@@ -1838,7 +1946,12 @@ window.L = window.L || window.leaflet;
     };
     document.getElementById("act-note").onclick = () => openCapture({ placeId: p.id, latlng: { lat: p.lat, lng: p.lng } });
     document.querySelectorAll("#pl-body .tl-item").forEach((node) => {
-      node.onclick = () => openEntry(node.dataset.entry);
+      const id = node.dataset.entry;
+      const entry = es.find((e) => e.id === id);
+      swipeToDelete(node, {
+        onTap: () => openEntry(id),
+        onDelete: () => entry && deleteEntry(entry)
+      });
     });
     document.getElementById("pl-more").onclick = async () => {
       const act = await actionsSheet(p.name, [
@@ -1861,7 +1974,7 @@ window.L = window.L || window.leaflet;
       }
     };
   }
-  async function deletePlace(p, es) {
+  async function deletePlace(p, es, stay = false) {
     const ok = await confirmBox({
       title: "\u5220\u6389\u8FD9\u4E2A\u5730\u70B9\uFF1F",
       text: `\u8FDE\u540C\u8FD9\u91CC\u7684 ${es.length} \u6761\u8BB0\u5F55\u548C\u7167\u7247\u4E00\u8D77\u5220\u6389\uFF0C\u5220\u4E86\u5C31\u627E\u4E0D\u56DE\u6765\u3002\u5EFA\u8BAE\u5148\u53BB\u8BBE\u7F6E\u91CC\u5BFC\u51FA\u4E00\u6B21\u5907\u4EFD\u3002`,
@@ -1876,7 +1989,25 @@ window.L = window.L || window.leaflet;
     await db.del("places", p.id);
     await reload();
     toast("\u5DF2\u5220\u9664");
+    if (stay) {
+      route();
+      return;
+    }
     location.hash = "#/";
+  }
+  async function deleteEntry(entry) {
+    const ok = await confirmBox({
+      title: "\u5220\u6389\u8FD9\u6761\u8BB0\u5F55\uFF1F",
+      text: "\u6587\u5B57\u548C\u7167\u7247\u90FD\u4F1A\u5220\u6389\uFF0C\u5220\u4E86\u627E\u4E0D\u56DE\u6765\u3002",
+      okText: "\u5220\u9664",
+      danger: true
+    });
+    if (!ok) return;
+    for (const ph of entry.photos || []) await db.del("photos", ph);
+    await db.del("entries", entry.id);
+    await reload();
+    toast("\u5DF2\u5220\u9664");
+    route();
   }
   var listFilter = "wish";
   async function renderList() {
@@ -1952,10 +2083,17 @@ window.L = window.L || window.leaflet;
       };
     });
     document.querySelectorAll("#list-body .li").forEach((node) => {
-      node.onclick = () => {
-        S.backTo = "#/list";
-        location.hash = "#/place/" + node.dataset.id;
-      };
+      const id = node.dataset.id;
+      const p = S.places.find((x) => x.id === id);
+      swipeToDelete(node, {
+        onTap: () => {
+          S.backTo = "#/list";
+          location.hash = "#/place/" + id;
+        },
+        onDelete: () => {
+          if (p) deletePlace(p, S.entriesByPlace.get(id) || [], true);
+        }
+      });
     });
   }
   async function renderSettings() {
@@ -2157,9 +2295,11 @@ window.L = window.L || window.leaflet;
       const r = await searchModal({ settings: S.settings, local: annotated(), bias: center() });
       if (!r) return;
       const isDistrict = r.level === "district" || r.kind === "district";
-      if (!r.level) r.level = isDistrict ? "district" : "point";
+      const isCity = r.kind === "city";
+      if (!r.level) r.level = isDistrict ? "district" : isCity ? "city" : "point";
       if (isDistrict && !r.district) r.district = r.name;
-      jumpTo(r.lat, r.lng, isDistrict ? 12 : 17);
+      if (isCity) r.city = r.name;
+      jumpTo(r.lat, r.lng, isDistrict ? 12 : isCity ? 13 : 17);
       if (r.placeId) {
         const p = S.places.find((x) => x.id === r.placeId);
         if (p) {
